@@ -12,7 +12,9 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"math/big"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/seeleteam/go-seele/cmd/util"
@@ -36,6 +38,9 @@ var (
 	errInvalidTokenShortName = errors.New("invalid subchain token short name")
 	errInvalidTokenAmount    = errors.New("invalid subchain token amount")
 	errSubChainInfo          = errors.New("failed to get sub-chain information")
+
+	defaultTokenFullName  = "seelecoin"
+	defaultTokenShortName = "seele"
 )
 
 func registerSubChain(client *rpc.Client) (interface{}, interface{}, error) {
@@ -54,11 +59,11 @@ func registerSubChain(client *rpc.Client) (interface{}, interface{}, error) {
 		return nil, nil, errInvalidVersion
 	}
 
-	if len(subChain.TokenFullName) == 0 {
+	if len(subChain.TokenFullName) == 0 || strings.ToLower(subChain.TokenFullName) == defaultTokenFullName {
 		return nil, nil, errInvalidTokenFullName
 	}
 
-	if len(subChain.TokenShortName) == 0 {
+	if len(subChain.TokenShortName) == 0 || strings.ToLower(subChain.TokenShortName) == defaultTokenShortName {
 		return nil, nil, errInvalidTokenShortName
 	}
 
@@ -111,7 +116,12 @@ func createSubChainConfigFile(c *cli.Context) error {
 		return err
 	}
 
-	config, err := getConfigFromSubChain(client, subChainInfo)
+	networkID, err := util.GetNetworkID(client)
+	if err != nil {
+		return err
+	}
+
+	config, err := getConfigFromSubChain(networkID, subChainInfo)
 	if err != nil {
 		return err
 	}
@@ -134,7 +144,7 @@ func createSubChainConfigFile(c *cli.Context) error {
 		return err
 	}
 
-	fmt.Println("generate subchain config files successfully")
+	fmt.Println("generate sub chain config files successfully")
 	return nil
 }
 
@@ -219,7 +229,7 @@ func getStaticNodes() ([]*discovery.Node, error) {
 	return arrayNode, nil
 }
 
-func getConfigFromSubChain(client *rpc.Client, subChainInfo *system.SubChainInfo) (*util.Config, error) {
+func getConfigFromSubChain(networkID string, subChainInfo *system.SubChainInfo) (*util.Config, error) {
 	addr, err := common.HexToAddress(coinbaseValue)
 	if err != nil {
 		return nil, fmt.Errorf("invalid coinbase, err:%s", err.Error())
@@ -244,18 +254,14 @@ func getConfigFromSubChain(client *rpc.Client, subChainInfo *system.SubChainInfo
 		return nil, err
 	}
 
-	networkID, err := util.GetNetworkID(client)
-	if err != nil {
-		return nil, err
-	}
-
 	config := &util.Config{}
 	config.BasicConfig = node.BasicConfig{
-		Name:     subChainInfo.Name,
-		Version:  subChainInfo.Version,
-		DataDir:  subChainInfo.Name,
-		RPCAddr:  "0.0.0.0:8127",
-		Coinbase: coinbaseValue,
+		Name:           subChainInfo.Name,
+		Version:        subChainInfo.Version,
+		DataDir:        subChainInfo.Name,
+		RPCAddr:        "0.0.0.0:8127",
+		Coinbase:       coinbaseValue,
+		MinerAlgorithm: algorithmValue,
 	}
 
 	config.P2PConfig = p2p.Config{
@@ -289,9 +295,39 @@ func getConfigFromSubChain(client *rpc.Client, subChainInfo *system.SubChainInfo
 	}
 
 	config.GenesisConfig = core.GenesisInfo{
-		Difficult:   int64(subChainInfo.GenesisDifficulty),
-		ShardNumber: shardValue,
+		Difficult:       int64(subChainInfo.GenesisDifficulty),
+		ShardNumber:     shardValue,
+		CreateTimestamp: subChainInfo.CreateTimestamp,
 	}
 
 	return config, nil
+}
+
+func generateTemplate(c *cli.Context) error {
+	if err := system.ValidateDomainName([]byte(nameValue)); err != nil {
+		return err
+	}
+
+	subChainInfo := system.SubChainInfo{
+		Name:              nameValue,
+		Version:           "1.0",
+		StaticNodes:       []*discovery.Node{},
+		TokenFullName:     defaultTokenFullName,
+		TokenShortName:    defaultTokenShortName,
+		TokenAmount:       0,
+		GenesisDifficulty: 8000000,
+		GenesisAccounts:   map[common.Address]*big.Int{},
+	}
+
+	byteSubChainInfo, err := json.MarshalIndent(subChainInfo, "", "\t")
+	if err != nil {
+		return err
+	}
+
+	if err = common.SaveFile(filepath.Join(subChainJSONFileVale, "subChainTemplate.json"), byteSubChainInfo); err != nil {
+		return err
+	}
+
+	fmt.Println("generate template json file for sub chain register successfully")
+	return nil
 }
